@@ -1,0 +1,360 @@
+// Datas de calendário: UTC só para contar dias, sem deslocar o prazo por fuso/DST.
+export function seloPrazo(prazo, hoje = new Date()) {
+  if (!prazo) return { texto: 'Sem prazo', classe: 'badge--info' };
+  const [ano, mes, dia] = prazo.split('-').map(Number);
+  const dias = Math.round((Date.UTC(ano, mes - 1, dia) -
+    Date.UTC(hoje.getFullYear(), hoje.getMonth(), hoje.getDate())) / 86400000);
+  if (dias === 0) return { texto: 'vence hoje', classe: 'badge--warning' };
+  const n = Math.abs(dias), unidade = n === 1 ? 'dia' : 'dias';
+  return dias < 0
+    ? { texto: `vencida há ${n} ${unidade}`, classe: 'badge--ended' }
+    : { texto: `faltam ${n} ${unidade}`, classe: dias <= 5 ? 'badge--warning' : 'badge--info' };
+}
+
+export function ordenarTarefas(tarefas) {
+  return [...tarefas].sort((a, b) => (a.prazo || '9999').localeCompare(b.prazo || '9999') ||
+    (a.criada_em || '').localeCompare(b.criada_em || '') || a.id.localeCompare(b.id));
+}
+
+export function dataHora(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+export function gmailLink(thread) {
+  return thread ? `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(thread)}` : null;
+}
+
+export function saudeVigia(execucao, agora = new Date()) {
+  if (!execucao?.terminada_em) return { texto: 'vigia nunca rodou', atrasado: true };
+  const minutos = Math.max(0, Math.floor((agora - new Date(execucao.terminada_em)) / 60000));
+  const tempo = minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)} h`;
+  const atrasado = agora - new Date(execucao.terminada_em) > 7200000;
+  return { texto: atrasado ? `vigia atrasado (última checagem há ${tempo})`
+    : `Vigia: última checagem há ${tempo}`, atrasado };
+}
+
+export const ESTADOS_PASSO = {
+  pendente: { icone: 'circle', texto: 'Pendente' },
+  sugerido: { icone: 'circle-help', texto: 'Sugerido' },
+  confirmado: { icone: 'circle-check', texto: 'Confirmado' },
+  dispensado: { icone: 'circle-minus', texto: 'Dispensado' },
+};
+
+// O que a mensagem significa, para o Victor não precisar ler o trecho para saber.
+const CLASSIFICACOES = {
+  exigencia: { texto: 'Exigência', classe: 'badge--warning' },
+  duvida: { texto: 'Dúvida', classe: 'badge--warning' },
+  concluido: { texto: 'Diz que concluiu', classe: 'badge--warning' },
+  informativo: { texto: 'Informativo', classe: 'badge--info' },
+  sem_acao: { texto: 'Sem ação', classe: 'badge--info' },
+};
+
+export function seloClassificacao(classificacao) {
+  return CLASSIFICACOES[classificacao] || null;
+}
+
+const MOTIVOS = {
+  demanda_nova: 'Assunto novo, sem tarefa',
+  mascara_falhou: 'Dado pessoal não mascarado — conteúdo retido',
+  alegacao_sem_evidencia: 'Diz que fez, sem prova no e-mail',
+  ausencia: 'Resposta automática de ausência',
+  spam: 'Veio do spam',
+  spam_com_vinculo: 'Veio do spam, mas parece da tarefa',
+  mensagem_propria: 'Mensagem sua',
+  regra: 'Ligada por regra',
+  modelo: 'Ligada pelo modelo',
+  sem_tarefa_relacionada: 'Sem relação com tarefa aberta',
+  agenda: 'Convite de agenda',
+  lista: 'Lista de envio',
+  json_invalido: 'O modelo respondeu fora do formato',
+  confianca_baixa: 'O modelo não teve confiança',
+};
+
+export function motivoLegivel(motivo) {
+  return MOTIVOS[motivo] || motivo || '';
+}
+
+// Vínculo que a regra já garante (mesma conversa da tarefa ou mensagem do próprio Victor) e que não pede
+// ação: vai para o bloco recolhido "Ligadas automaticamente", para não disputar atenção com o resto.
+export function ligadaAutomaticamente(m) {
+  return ['regra', 'mensagem_propria'].includes(m.motivo)
+    && !['exigencia', 'duvida', 'concluido'].includes(m.classificacao)
+    && (m.vigia_vinculos || []).some(v => v.estado === 'sugerido');
+}
+
+// Texto livre continua escapado; somente URLs HTTP(S) viram links.
+const escapar = texto => String(texto ?? '').replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+export function textoComLinks(texto) {
+  return String(texto ?? '').split(/(https?:\/\/[^\s<>"']+)/g).map(parte => {
+    if (!/^https?:\/\//.test(parte)) return escapar(parte);
+    const url = parte.replace(/[.,;!?)]+$/, '');
+    try {
+      const parsed = new URL(url);
+      if (!parsed.hostname || parsed.username || parsed.password) return escapar(parte);
+    } catch { return escapar(parte); }
+    return '<a href="' + escapar(url) + '" target="_blank" rel="noopener noreferrer">' +
+      escapar(url) + '</a>' + escapar(parte.slice(url.length));
+  }).join('');
+}
+
+export function validarFeito(nota, link = '') {
+  if (!nota?.trim() || nota.length > 2000) throw new Error('Escreva uma nota de até 2000 caracteres.');
+  const url = link.trim();
+  if (url) {
+    let parsed;
+    try { parsed = new URL(url); } catch { /* mensagem comum abaixo */ }
+    if (url.length > 500 || !/^https:\/\//.test(url) || /\s/.test(url) ||
+      !parsed?.hostname || parsed.username || parsed.password) {
+      throw new Error('Use um link https:// de até 500 caracteres.');
+    }
+  }
+  return { p_nota: nota.trim(), p_link: url || null };
+}
+
+const seguro = valor => typeof valor === 'string' && !/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(valor) ? valor : null;
+const linkSeguro = valor => { const l = seguro(valor); return l && /^https:\/\//.test(l) ? l : null; };
+
+// A FK ultimo_feito_id preserva a evidência mesmo após confirmação e muitos eventos. Desde a 057 o passo
+// também é marcado por uma atualização da pessoa (tipo 'atualizacao', texto em detalhe.texto).
+export function registroFeito(passo) {
+  const e = passo.feito;
+  if (e?.origem !== 'humano' || !['sugestao', 'atualizacao'].includes(e.tipo) || !e.detalhe?.por) return null;
+  const nota = e.tipo === 'atualizacao' ? e.detalhe.texto : e.detalhe.nota;
+  return { nota: seguro(nota) || '[Retido]', por: seguro(e.detalhe.por) || '[Retido]', link: linkSeguro(e.detalhe.link) };
+}
+
+// Situação que o responsável escolhe ao atualizar (057). A ordem é a do formulário.
+export const SITUACOES = {
+  em_andamento: { texto: 'Em andamento', classe: 'badge--info', icone: 'loader' },
+  esperando: { texto: 'Esperando alguém', classe: 'badge--info', icone: 'hourglass' },
+  travado: { texto: 'Travado', classe: 'badge--warning', icone: 'octagon-alert' },
+  feito: { texto: 'Feito', classe: 'badge--active', icone: 'circle-check' },
+};
+
+export function validarAtualizacao(situacao, texto, link = '') {
+  if (!SITUACOES[situacao]) throw new Error('Escolha a situação.');
+  if (!texto?.trim() || texto.length > 2000) throw new Error('Escreva o que aconteceu (até 2000 caracteres).');
+  if (!seguro(texto)) throw new Error('Tire o endereço de e-mail do texto: o sistema não guarda e-mail de pessoas.');
+  const { p_nota, p_link } = validarFeito(texto, link);
+  return { p_situacao: situacao, p_texto: p_nota, p_link };
+}
+
+// Uma atualização da linha do tempo, pronta para mostrar (ou null se não for uma).
+export function lerAtualizacao(e) {
+  if (e?.tipo !== 'atualizacao' || e.origem !== 'humano' || !SITUACOES[e.detalhe?.situacao]) return null;
+  return { situacao: e.detalhe.situacao, texto: seguro(e.detalhe.texto) || '[Retido]',
+    por: seguro(e.detalhe.por) || '[Retido]', link: linkSeguro(e.detalhe.link), quando: e.ocorrido_em || null };
+}
+
+export function podeRegistrarFeito(tarefa, usuario, admin = false) {
+  return ['em_andamento', 'aguardando_terceiro'].includes(tarefa.status) &&
+    (admin || Boolean(usuario && tarefa.responsavel_id === usuario));
+}
+
+// Quem fez cada coisa na linha do tempo, para o Victor e o Arthur: o vigia e o operador são o Buriti.
+const ORIGENS = { buriti: 'Buriti', vigia: 'Buriti (leitura do e-mail)', humano: 'Pessoa', sistema: 'Sistema' };
+export function rotuloOrigem(origem) {
+  return ORIGENS[origem] || origem || '';
+}
+
+// ---------- Tela de Atividades (058) ----------
+function diasAte(prazo, hoje = new Date()) {
+  if (!prazo) return null;
+  const [ano, mes, dia] = prazo.split('-').map(Number);
+  return Math.round((Date.UTC(ano, mes - 1, dia) - Date.UTC(hoje.getFullYear(), hoje.getMonth(), hoje.getDate())) / 86400000);
+}
+
+const aberta = t => ['em_andamento', 'aguardando_terceiro'].includes(t.status);
+
+// Faixas por tempo, em ordem fixa. A tela de Atividades mostra só as que têm algo e responde primeiro
+// "o que eu faço agora?": atrasadas/hoje, esta semana, depois, sem prazo e, por último, o que espera
+// terceiro (a parte que não depende de quem está olhando).
+export const FAIXAS_ATIVIDADE = [
+  { chave: 'hoje', titulo: 'Atrasadas e hoje' },
+  { chave: 'semana', titulo: 'Esta semana' },
+  { chave: 'depois', titulo: 'Depois' },
+  { chave: 'sem_prazo', titulo: 'Sem prazo' },
+  { chave: 'esperando', titulo: 'Esperando' },
+];
+
+export const estaEsperando = t => t?.status === 'aguardando_terceiro' || t?.situacao === 'esperando';
+
+// Passo que alguém marcou como feito esperando a confirmação do admin.
+export function precisaConfirmar(t) {
+  return (t?.tarefa_passos || []).some(s => s.estado === 'sugerido');
+}
+
+// Pedido de atenção do operador/responsável (o cartão mostra o motivo).
+export function precisaAtencao(t) {
+  return Boolean(t?.precisa_atencao || t?.aviso_responsavel);
+}
+
+// O sinal discreto da linha, além do prazo: confirmar um passo, atenção pedida, espera de terceiro
+// ou a tarefa travada que o responsável registrou.
+export function sinalAtividade(t, { admin = false } = {}) {
+  if (admin && precisaConfirmar(t)) return { chave: 'confirmar', texto: 'confirmar passo' };
+  if (admin && precisaAtencao(t)) return { chave: 'atencao', texto: 'precisa de você' };
+  if (estaEsperando(t)) return { chave: 'esperando', texto: 'esperando' };
+  if (t?.situacao === 'travado') return { chave: 'travado', texto: 'travada' };
+  return null;
+}
+
+// "Esta semana" termina no domingo; depois disso a atividade cai em "Depois".
+const diasAteDomingo = hoje => (7 - hoje.getDay()) % 7;
+
+// Faixa em que a atividade aparece. Esperar alguém de fora vence a data: fica no fim, mais apagada.
+export function faixaAtividade(t, { hoje = new Date() } = {}) {
+  if (!aberta(t)) return 'encerrada';
+  if (estaEsperando(t)) return 'esperando';
+  const dias = diasAte(t.prazo, hoje);
+  if (dias === null) return 'sem_prazo';
+  if (dias <= 0) return 'hoje';
+  if (dias <= diasAteDomingo(hoje)) return 'semana';
+  return 'depois';
+}
+
+// Depende da pessoa logada? Sim para o que é dela e, para o admin, para o que espera confirmação ou atenção.
+export function minhaVez(t, { admin = false, eu = null } = {}) {
+  if (!aberta(t)) return false;
+  if (eu && t.responsavel_id === eu) return true;
+  return admin && (precisaConfirmar(t) || precisaAtencao(t));
+}
+
+// Prazo na linha, sem alarme: atraso vira "há 3 dias" (âmbar discreto), nunca "vencida" em vermelho.
+export function prazoAtividade(prazo, hoje = new Date()) {
+  if (!prazo) return { texto: '', nivel: 'nenhum' };
+  const p = prazoCurto(prazo, hoje);
+  if (p.nivel !== 'vencido') return p;
+  const dias = diasAte(prazo, hoje);
+  if (dias === 0) return { texto: 'hoje', nivel: 'hoje' };
+  const n = -dias;
+  return { texto: `há ${n} ${n === 1 ? 'dia' : 'dias'}`, nivel: 'atrasado' };
+}
+
+// O que vem a seguir: para o admin, o passo que alguém marcou como feito; senão, o primeiro em aberto.
+export function proximoPasso(t, admin = false) {
+  const passos = [...(t.tarefa_passos || [])].sort((a, b) => a.ordem - b.ordem);
+  const sugerido = admin && passos.find(s => s.estado === 'sugerido');
+  if (sugerido) return { texto: sugerido.descricao, confirmar: true, quem: sugerido.quem || null };
+  const aberto = passos.find(s => s.estado === 'pendente') || passos.find(s => s.estado === 'sugerido');
+  if (!aberto) return null;
+  return { texto: aberto.descricao, confirmar: false, quem: aberto.executor === 'buriti' ? 'Buriti' : aberto.quem || null };
+}
+
+const MESES_CURTOS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+export function prazoCurto(prazo, hoje = new Date()) {
+  const dias = diasAte(prazo, hoje);
+  if (dias === null) return { texto: 'sem prazo', nivel: 'nenhum' };
+  if (dias < 0) return { texto: `venceu há ${-dias} ${dias === -1 ? 'dia' : 'dias'}`, nivel: 'vencido' };
+  if (dias === 0) return { texto: 'hoje', nivel: 'vencido' };
+  if (dias === 1) return { texto: 'amanhã', nivel: 'perto' };
+  if (dias <= 6) return { texto: `em ${dias} dias`, nivel: 'perto' };
+  const [, mes, dia] = prazo.split('-').map(Number);
+  return { texto: `${dia} ${MESES_CURTOS[mes - 1]}`, nivel: 'longe' };
+}
+
+// Ordem dentro do grupo: prazo (vencidas primeiro, sem prazo por último), depois a mais antiga.
+export function ordenarAtividades(lista) { return ordenarTarefas(lista); }
+
+// Para o admin, o que espera confirmação ou atenção vem antes dentro da faixa; o resto segue por prazo.
+function pesoAtencao(t, admin) {
+  if (!admin) return 0;
+  if (precisaConfirmar(t)) return 0;
+  if (precisaAtencao(t)) return 1;
+  return 2;
+}
+
+// Faixas da tela, na ordem fixa e só com as que têm atividade. Tarefas encerradas ficam de fora.
+export function agruparAtividades(tarefas, { admin = false, hoje = new Date() } = {}) {
+  const abertas = (tarefas || []).filter(aberta);
+  return FAIXAS_ATIVIDADE
+    .map(({ chave, titulo }) => ({
+      chave,
+      titulo,
+      tarefas: ordenarAtividades(abertas.filter(t => faixaAtividade(t, { hoje }) === chave))
+        .sort((a, b) => pesoAtencao(a, admin) - pesoAtencao(b, admin)),
+    }))
+    .filter(faixa => faixa.tarefas.length);
+}
+
+// Vista Equipe: um bloco por responsável (alfabético, "Sem responsável" no fim), cada um com as faixas.
+export function agruparPorPessoa(tarefas, { admin = false, hoje = new Date(), eu = null } = {}) {
+  const porPessoa = new Map();
+  for (const t of tarefas || []) {
+    if (!aberta(t)) continue;
+    const chave = t.responsavel_id || '';
+    if (!porPessoa.has(chave)) {
+      porPessoa.set(chave, {
+        id: chave || null,
+        nome: chave ? t.responsavel || 'Pessoa sem nome no sistema' : 'Sem responsável',
+        sem: !chave,
+        eu: Boolean(chave && eu && chave === eu),
+        itens: [],
+      });
+    }
+    porPessoa.get(chave).itens.push(t);
+  }
+  return [...porPessoa.values()]
+    .sort((a, b) => Number(a.sem) - Number(b.sem) || a.nome.localeCompare(b.nome, 'pt-BR'))
+    .map(({ itens, ...pessoa }) => ({ ...pessoa, blocos: agruparAtividades(itens, { admin, hoje }) }));
+}
+
+export const normalizar = texto => String(texto ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+// "30.068 remanejar rubricas até 20/10 @Arthur": centro (obrigatório), o que fazer, prazo e responsável
+// (padrão: quem anota). Recusa em vez de adivinhar: centro desconhecido, data impossível, nome ambíguo.
+export function lerCaptura(texto, { centros = [], pessoas = [], eu = null, hoje = new Date() } = {}) {
+  let resto = String(texto ?? '').replace(/\s+/g, ' ').trim();
+  if (!resto) throw new Error('Escreva a atividade.');
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(resto)) throw new Error('Tire o endereço de e-mail: o sistema não guarda e-mail de pessoas.');
+  const codigos = resto.match(/\b\d{2}\.\d{3}\b/g) || [];
+  if (!codigos.length) throw new Error('Comece pelo código do centro de custo (ex.: 30.068).');
+  if (new Set(codigos).size > 1) throw new Error('Use um centro de custo por atividade.');
+  const centro = centros.find(c => c.code === codigos[0]);
+  if (!centro) throw new Error(`O centro ${codigos[0]} não está cadastrado ou não está no seu acesso.`);
+  resto = resto.replace(/\b\d{2}\.\d{3}\b/g, ' ');
+
+  let prazo = null;
+  const data = resto.match(/\b(?:até|ate|prazo)?\s*(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?\b/i);
+  if (data) {
+    const dia = Number(data[1]), mes = Number(data[2]);
+    let ano = data[3] ? Number(data[3].length === 2 ? '20' + data[3] : data[3]) : hoje.getFullYear();
+    const valida = a => { const d = new Date(Date.UTC(a, mes - 1, dia)); return d.getUTCMonth() === mes - 1 && d.getUTCDate() === dia; };
+    if (!valida(ano)) throw new Error(`A data ${data[1]}/${data[2]} não existe.`);
+    // Sem ano e já passada há mais de um mês: é do ano que vem (anotar em dezembro algo para janeiro).
+    if (!data[3] && diasAte(`${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`, hoje) < -31) ano += 1;
+    prazo = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+    resto = resto.replace(data[0], ' ');
+  }
+
+  let responsavel = pessoas.find(p => p.user_id === eu) || null;
+  const marca = resto.match(/@([^\s@]+)/);
+  if (marca) {
+    const alvo = normalizar(marca[1]);
+    const achados = pessoas.filter(p => normalizar(p.display_name).split(/[\s.]+/).some(parte => parte.startsWith(alvo)));
+    if (achados.length !== 1) {
+      throw new Error(achados.length ? `"@${marca[1]}" serve para mais de uma pessoa: ${achados.map(p => p.display_name).join(', ')}.`
+        : `Não achei "@${marca[1]}" entre as pessoas do sistema.`);
+    }
+    responsavel = achados[0];
+    resto = resto.replace(marca[0], ' ');
+  }
+
+  const titulo = resto.replace(/\s+/g, ' ').replace(/^[\s:–—-]+|[\s:–—-]+$/g, '').trim();
+  // "Remanejamento de rubricas do 30.068": sem o centro, a preposição do fim sobra.
+  const limpo = titulo.replace(/\s+(do|da|de|dos|das|no|na|em|para|pro)$/i, '').trim();
+  if (!limpo) throw new Error('Falta dizer o que fazer.');
+  if (limpo.length > 300) throw new Error('Resuma em até 300 caracteres.');
+  return { centro, titulo: limpo[0].toUpperCase() + limpo.slice(1), prazo, responsavel };
+}
+
+if (typeof window !== 'undefined') {
+  window.BuritiTarefas = { rotuloOrigem, seloPrazo, ordenarTarefas, dataHora, gmailLink, saudeVigia, ESTADOS_PASSO,
+    seloClassificacao, motivoLegivel, ligadaAutomaticamente, textoComLinks, validarFeito, registroFeito, podeRegistrarFeito,
+    SITUACOES, validarAtualizacao, lerAtualizacao,
+    FAIXAS_ATIVIDADE, estaEsperando, precisaConfirmar, precisaAtencao, sinalAtividade, faixaAtividade, minhaVez,
+    prazoAtividade, proximoPasso, prazoCurto, ordenarAtividades, agruparAtividades, agruparPorPessoa,
+    normalizar, lerCaptura };
+}
